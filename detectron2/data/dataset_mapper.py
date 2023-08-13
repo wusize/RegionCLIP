@@ -4,7 +4,9 @@ import logging
 import numpy as np
 from typing import List, Optional, Union
 import torch
-
+import io
+from mmcv import FileClient
+from PIL import Image
 from detectron2.config import configurable
 
 from . import detection_utils as utils
@@ -88,6 +90,14 @@ class DatasetMapper:
         mode = "training" if is_train else "inference"
         logger.info(f"[DatasetMapper] Augmentations used in {mode}: {augmentations}")
 
+        self.FILE_CLIENT = None
+        self.FILE_CLIENT_ARGS = dict(
+            backend='petrel',
+            path_mapping=dict({
+                'datasets/coco/train2017': 's3://openmmlab/datasets/detection/coco/train2017',
+                'datasets/coco/val2017': 's3://openmmlab/datasets/detection/coco/val2017'
+            }))
+
     @classmethod
     def from_config(cls, cfg, is_train: bool = True):
         augs = utils.build_augmentation(cfg, is_train)
@@ -121,6 +131,15 @@ class DatasetMapper:
             ret["clip_crop"] = True
         return ret
 
+    def read_image(self, file_name, format=None):
+        if self.FILE_CLIENT is None:
+            self.FILE_CLIENT = FileClient(**self.FILE_CLIENT_ARGS)
+        img_bytes = self.FILE_CLIENT.get(file_name)
+        buff = io.BytesIO(img_bytes)
+        image = Image.open(buff)
+        image = utils._apply_exif_orientation(image)
+        return utils.convert_PIL_to_numpy(image, format)
+
     def __call__(self, dataset_dict):
         """
         Args:
@@ -131,12 +150,12 @@ class DatasetMapper:
         """
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
         # USER: Write your own image loading if it's not from a file
-        image = utils.read_image(dataset_dict["file_name"], format=self.image_format)
+        image = self.read_image(dataset_dict["file_name"], format=self.image_format)
         utils.check_image_size(dataset_dict, image)
 
         # USER: Remove if you don't do semantic/panoptic segmentation.
         if "sem_seg_file_name" in dataset_dict:
-            sem_seg_gt = utils.read_image(dataset_dict.pop("sem_seg_file_name"), "L").squeeze(2)
+            sem_seg_gt = self.read_image(dataset_dict.pop("sem_seg_file_name"), "L").squeeze(2)
         else:
             sem_seg_gt = None
 
